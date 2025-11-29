@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>calis hell as a platformer</title>
+    <!-- Load Tailwind CSS for utility styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Three.js library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        /* Custom styles for the game container */
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #1a1a2e; /* Dark background */
+            user-select: none;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+        }
+        #game-container {
+            width: 100vw;
+            height: 80vh; 
+            max-width: 1000px;
+            max-height: 800px;
+            background-color: #2c0739;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            border-radius: 12px;
+            overflow: hidden;
+            position: relative;
+            cursor: grab; 
+        }
+        canvas {
+            display: block;
+            touch-action: none; 
+        }
+        .controls-panel {
+            position: absolute;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            padding: 10px;
+            background-color: rgba(0, 0, 0, 0.4);
+            border-radius: 8px;
+            display: none; 
+            grid-template-areas: ". w ." "a s d";
+            grid-template-columns: repeat(3, 1fr);
+            gap: 5px;
+        }
+        @media (max-width: 768px) {
+            .controls-panel {
+                display: grid;
+            }
+        }
+        .control-button {
+            @apply p-4 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-lg shadow-lg transition-all duration-150 active:scale-95 text-xl;
+            width: 60px;
+            height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .control-button[data-key="w"] { grid-area: w; }
+        .control-button[data-key="a"] { grid-area: a; }
+        .control-button[data-key="s"] { grid-area: s; }
+        .control-button[data-key="d"] { grid-area: d; }
+        .control-button[data-key=" "] { 
+            grid-column: 1 / span 3;
+            width: 100%;
+            height: 40px;
+            font-size: 1rem;
+            margin-top: 5px;
+        }
+
+        .message-box {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 20px 30px;
+            border-radius: 10px;
+            z-index: 20;
+            text-align: center;
+            font-size: 1.25rem;
+            display: none;
+        }
+        .score-board {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.5);
+            color: white;
+            padding: 8px 15px;
+            border-radius: 6px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            z-index: 10;
+        }
+    </style>
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, setDoc, doc, collection, onSnapshot, query, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Required global variables provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        // Log level for debugging
+        setLogLevel('debug');
+
+        // Initialize Firebase
+        if (Object.keys(firebaseConfig).length > 0) {
+            const app = initializeApp(firebaseConfig);
+            window.db = getFirestore(app);
+            window.auth = getAuth(app);
+
+            // Handle Authentication
+            async function authenticate() {
+                try {
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(window.auth, initialAuthToken);
+                    } else {
+                        await signInAnonymously(window.auth);
+                    }
+                    console.log("Firebase Authenticated. User ID:", window.auth.currentUser.uid);
+                } catch (error) {
+                    console.error("Firebase Auth Error:", error);
+                }
+            }
+            authenticate();
+        } else {
+            console.warn("Firebase configuration is missing. Persistence features are disabled.");
+        }
+    </script>
+</head>
+<body>
+    <div id="game-container">
+        <!-- Scoreboard -->
+        <div id="score-board" class="score-board">Height: 0</div>
+        <!-- Canvas will be appended here -->
+        <div id="message-box" class="message-box">
+            <p id="message-text">Use WASD/Arrows to move, and SPACE to jump.</p>
+        </div>
+        <!-- Mobile Controls Panel -->
+        <div class="controls-panel">
+            <button class="control-button" data-key="w">▲</button>
+            <button class="control-button" data-key="a">◀</button>
+            <button class="control-button" data-key="s">▼</button>
+            <button class="control-button" data-key="d">▶</button>
+            <button class="control-button" data-key=" ">JUMP</button>
+        </div>
+    </div>
+
+    <script>
+        // --- Game Variables and Constants ---
+        let scene, camera, renderer, container;
+        let player;
+        let cameraContainer; // Object to handle camera yaw rotation (to fix gimbal lock)
+        let keys = {};
+        
+        // Player constants
+        const playerRadius = 0.5;
+        const respawnHeight = -10; 
+        const moveSpeed = 0.2; // Instant speed
+        const spikeTipRadius = 0.2; // Effective collision radius around the spike's tip
+
+        // Platform constants
+        const platformWidth = 5;
+        const platformDepth = 5;
+        const platformHeight = 0.5;
+        const verticalSpacing = 4; // Height between platform levels
+        const platformCount = 20; // Number of platforms generated at startup/ahead
+        let platforms = [];
+        let nextPlatformY = 0;
+        let lastPlatformIndex = 0;
+
+        // Physics
+        let velocity = new THREE.Vector3(0, 0, 0);
+        let isJumping = false;
+        let jumpVelocity = 0;
+        const gravity = -0.05; 
+        const jumpPower = 1.0; 
+
+        // Camera Control Variables
+        let cameraYaw = 0; 
+        let cameraPitch = 0; // Vertical look (Pitch)
+        const maxPitch = Math.PI / 2.5; // Limit vertical rotation
+        const eyeLevelHeight = playerRadius * 1.5; 
+        const rotationSpeed = 0.005; 
+        let isCameraDragging = false;
+        let lastPointerX = 0;
+        let lastPointerY = 0; 
+        let onGroundPlatform = null; // Reference to the platform the player is standing on
+        
+        // --- Utility Functions ---
+
+        function showMessage(text) {
+            const box = document.getElementById('message-box');
+            document.getElementById('message-text').textContent = text;
+            box.style.display = 'block';
+            setTimeout(() => {
+                box.style.display = 'none';
+            }, 3000);
+        }
+
+        /**
+         * Resets camera orientation to the default forward look.
+         */
+        function resetCamera() {
+            cameraYaw = 0;
+            cameraPitch = 0;
+            showMessage("Camera orientation reset!");
+        }
+
+        // --- Respawn Function ---
+        function respawn() {
+            if (platforms.length === 0) return;
+
+            const startPlatform = platforms[0];
+            
+            // Calculate the precise Y position: Platform base + half platform height + sphere radius
+            const initialY = startPlatform.position.y + platformHeight / 2 + playerRadius;
+
+            // Reset position to center of the starting platform
+            player.position.set(startPlatform.position.x, initialY, startPlatform.position.z); 
+            
+            // Explicitly set the player to be on the ground
+            onGroundPlatform = startPlatform;
+
+            // Reset movement and jump states
+            velocity.set(0, 0, 0);
+            jumpVelocity = 0;
+            isJumping = false;
+
+            resetCamera();
+
+            // Remove emissive glow and stop rotation
+            player.material.emissive.setHex(0x000000); 
+            player.rotation.set(0, 0, 0);
+
+            showMessage("Spiked! Respawning...");
+        }
+
+        // --- Platform Generation Functions ---
+        function generatePlatform(x, y, z, rotationY, isStartPlatform = false) {
+            // Base Platform Mesh
+            const platformGeometry = new THREE.BoxGeometry(platformWidth, platformHeight, platformDepth);
+            const platformMaterial = new THREE.MeshLambertMaterial({ color: 0x4a4a4a }); 
+            const platformMesh = new THREE.Mesh(platformGeometry, platformMaterial);
+            platformMesh.position.y = platformHeight / 2;
+            platformMesh.receiveShadow = true;
+
+            // Group to hold the platform and any hazards
+            const platformGroup = new THREE.Group();
+            platformGroup.add(platformMesh);
+            platformGroup.position.set(x, y, z);
+            platformGroup.rotation.y = rotationY;
+            platformGroup.isHazard = false;
+
+            // Spikes (Hazard) Generation
+            // Check if this is NOT the starting platform and generate hazards randomly
+            if (!isStartPlatform && Math.random() < 0.2) { 
+                // ConeGeometry(radius, height, radialSegments)
+                const spikeGeometry = new THREE.ConeGeometry(0.2, 0.5, 8);
+                const spikeMaterial = new THREE.MeshPhongMaterial({ color: 0xff0000, emissive: 0x880000 });
+                
+                const spikeCount = Math.floor(Math.random() * 2) + 1; 
+                
+                // Position Y is set to platformHeight / 2 (0.25). 
+                // Since ConeGeometry is centered (base at -0.25, tip at 0.25), 
+                // setting the spike's center Y to 0.25 puts the cone base at Y=0 (platform surface) 
+                // and the tip at Y=0.5 (above platform surface).
+                const spikePositions = [
+                    new THREE.Vector3(-platformWidth * 0.15, platformHeight / 2, -platformDepth * 0.15),
+                    new THREE.Vector3(platformWidth * 0.15, platformHeight / 2, platformDepth * 0.15),
+                    new THREE.Vector3(0, platformHeight / 2, 0)
+                ];
+                
+                for (let i = 0; i < spikeCount; i++) {
+                    const spike = new THREE.Mesh(spikeGeometry, spikeMaterial);
+                    spike.position.copy(spikePositions[i]);
+                    // FIX: Removed spike.rotation.x = Math.PI; which was flipping the cone and sinking it into the platform.
+                    spike.castShadow = true;
+                    platformGroup.add(spike);
+                    platformGroup.isHazard = true;
+                }
+                platformMesh.material.color.setHex(0x6b4500); 
+            }
+            
+            platformGroup.userData = { isPlatform: true, spikes: platformGroup.isHazard ? platformGroup.children.slice(1) : [] };
+            return platformGroup;
+        }
+
+        function createInitialPlatforms() {
+            const startPlatform = generatePlatform(0, 0, 0, 0, true);
+            scene.add(startPlatform);
+            platforms.push(startPlatform);
+            
+            nextPlatformY = verticalSpacing; 
+            lastPlatformIndex = 1;
+            
+            for (let i = 1; i < platformCount; i++) {
+                addNextPlatform();
+            }
+        }
+        
+        function addNextPlatform() {
+            const angle = lastPlatformIndex * 0.7; 
+            const radius = 8; 
+            
+            const x = radius * Math.sin(angle);
+            const z = radius * Math.cos(angle);
+            const y = nextPlatformY;
+            const rotationY = Math.random() * Math.PI * 2; 
+            
+            const platform = generatePlatform(x, y, z, rotationY);
+            scene.add(platform);
+            platforms.push(platform);
+
+            nextPlatformY += verticalSpacing;
+            lastPlatformIndex++;
+        }
+
+        // --- Collision Detection ---
+        const tempPlayerPos = new THREE.Vector3();
+        const tempSpikePos = new THREE.Vector3();
+        const spikeTipPoint = new THREE.Vector3();
+
+        /**
+         * Checks if the player's sphere is colliding with the tip of any spike.
+         */
+        function checkSpikeCollision() {
+            for (const platform of platforms) {
+                // Skip if the platform has no spikes
+                if (!platform.userData.isPlatform || !platform.userData.spikes.length) continue;
+
+                for (const spike of platform.userData.spikes) {
+                    // 1. Get world position of the cone's center (base Y + half height)
+                    spike.getWorldPosition(tempSpikePos); 
+                    
+                    // 2. Calculate the world position of the actual spike tip (Spike Tip Point - SDP)
+                    // Cone height is 0.5. Since the cone is centered and not rotated, the tip is 0.25 above its center point (tempSpikePos.y).
+                    spikeTipPoint.set(tempSpikePos.x, tempSpikePos.y + 0.25, tempSpikePos.z);
+
+                    // 3. Get player center position
+                    player.getWorldPosition(tempPlayerPos);
+
+                    // 4. Calculate distance between player center and spike tip
+                    const distance = tempPlayerPos.distanceTo(spikeTipPoint);
+
+                    // 5. Sphere-to-Sphere Intersection Check (Spike Tip Radius + Player Radius)
+                    if (distance < playerRadius + spikeTipRadius) {
+                        respawn();
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        /**
+         * Checks if the player is standing on any platform.
+         * @returns {THREE.Group|null} The platform the player is on, or null.
+         */
+        function checkPlatformCollision() {
+            const tolerance = 0.5; 
+            const currentY = player.position.y - playerRadius;
+            
+            for (const platform of platforms) {
+                const platformY = platform.position.y + platformHeight / 2;
+                
+                // 1. Check vertical overlap 
+                if (currentY <= platformY + tolerance && currentY >= platformY - tolerance) {
+                    
+                    // 2. Check horizontal overlap
+                    const halfPWidth = platformWidth / 2;
+                    const halfPDepth = platformDepth / 2;
+                    
+                    const playerLocalPos = platform.worldToLocal(player.position.clone()); 
+                    
+                    const horizontalBound = halfPWidth + playerRadius; 
+                    const depthBound = halfPDepth + playerRadius;
+                    
+                    if (playerLocalPos.x >= -horizontalBound && playerLocalPos.x <= horizontalBound &&
+                        playerLocalPos.z >= -depthBound && playerLocalPos.z <= depthBound) {
+                        return platform; // Collision found!
+                    }
+                }
+            }
+            return null; // No collision
+        }
+
+
+        // --- Initialization Function ---
+        function init() {
+            container = document.getElementById('game-container');
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+
+            // 1. Scene setup
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x38385a); 
+
+            // 2. Camera setup 
+            camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
+            
+            // The camera itself only handles the Pitch (X) rotation.
+            camera.position.set(0, eyeLevelHeight, 0); 
+
+            // Create a container (Object3D) to handle the Yaw (Y) rotation and position
+            cameraContainer = new THREE.Object3D(); 
+            cameraContainer.add(camera);
+            scene.add(cameraContainer);
+            
+            // 3. Renderer setup
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(width, height);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true; 
+            container.appendChild(renderer.domElement);
+
+            // 4. Lighting
+            const ambientLight = new THREE.AmbientLight(0x404040, 1.5);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 2.5);
+            directionalLight.position.set(5, 50, 10);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 2048;
+            directionalLight.shadow.mapSize.height = 2048;
+            directionalLight.shadow.camera.near = 0.5;
+            directionalLight.shadow.camera.far = 100;
+            directionalLight.shadow.camera.left = -50;
+            directionalLight.shadow.camera.right = 50;
+            directionalLight.shadow.camera.top = 50;
+            directionalLight.shadow.camera.bottom = -50;
+            scene.add(directionalLight);
+            
+            // 5. Create Sphere Character (Player)
+            const playerGeometry = new THREE.SphereGeometry(playerRadius, 32, 32); 
+            const playerMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0xffa500, 
+                shininess: 80, 
+                emissive: 0x000000,
+                // Make the player mesh invisible for first-person view, but keep its geometry for collision
+                transparent: true,
+                opacity: 0
+            }); 
+            player = new THREE.Mesh(playerGeometry, playerMaterial);
+            player.castShadow = true;
+            scene.add(player);
+
+            // 6. Create initial platforms
+            createInitialPlatforms();
+            respawn(); // Place player on the first platform
+
+            // UPDATED WELCOME MESSAGE
+            showMessage("Welcome to Hell. Have fun!");
+
+            // Event Listeners
+            window.addEventListener('resize', onWindowResize);
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+            setupTouchControls();
+            setupCameraControls();
+
+            // Start the game loop
+            animate();
+        }
+
+        // --- Camera Rotation Controls ---
+        function setupCameraControls() {
+            container.addEventListener('pointerdown', (event) => {
+                isCameraDragging = true;
+                lastPointerX = event.clientX;
+                lastPointerY = event.clientY; // Store Y position
+                container.style.cursor = 'none'; // Hide cursor while dragging for better FPP feel
+            });
+
+            container.addEventListener('pointermove', (event) => {
+                if (isCameraDragging) {
+                    const deltaX = event.clientX - lastPointerX;
+                    cameraYaw -= deltaX * rotationSpeed;
+                    lastPointerX = event.clientX;
+                    
+                    const deltaY = event.clientY - lastPointerY;
+                    cameraPitch -= deltaY * rotationSpeed; 
+                    lastPointerY = event.clientY;
+                    
+                    cameraPitch = Math.max(-maxPitch, Math.min(maxPitch, cameraPitch));
+                }
+            });
+
+            document.addEventListener('pointerup', () => {
+                isCameraDragging = false;
+                container.style.cursor = 'grab';
+            });
+
+            container.addEventListener('contextmenu', (e) => e.preventDefault());
+        }
+
+        // --- Input Handlers ---
+        function onKeyDown(event) {
+            keys[event.key.toLowerCase()] = true;
+            
+            if (event.key.toLowerCase() === 'r') {
+                resetCamera();
+                return; 
+            }
+
+            // Check for jump: player must be on a platform
+            if (event.key === ' ' && !isJumping && onGroundPlatform) {
+                const groundY = onGroundPlatform.position.y + platformHeight / 2 + playerRadius;
+                if (player.position.y <= groundY + 0.01) {
+                    isJumping = true;
+                    jumpVelocity = jumpPower;
+                    player.material.emissive.setHex(0x3333ff);
+                }
+            }
+        }
+
+        function onKeyUp(event) {
+            keys[event.key.toLowerCase()] = false;
+        }
+
+        function setupTouchControls() {
+            const controlButtons = document.querySelectorAll('.control-button');
+
+            controlButtons.forEach(button => {
+                const key = button.getAttribute('data-key');
+
+                const startHandler = (e) => {
+                    e.preventDefault(); 
+                    keys[key] = true;
+                    // Check for jump: player must be on a platform
+                    if (key === ' ' && !isJumping && onGroundPlatform) {
+                        const groundY = onGroundPlatform.position.y + platformHeight / 2 + playerRadius;
+                        if (player.position.y <= groundY + 0.01) {
+                            isJumping = true;
+                            jumpVelocity = jumpPower;
+                            player.material.emissive.setHex(0x3333ff);
+                        }
+                    }
+                };
+
+                const endHandler = (e) => {
+                    e.preventDefault();
+                    keys[key] = false;
+                };
+
+                button.addEventListener('touchstart', startHandler, { passive: false });
+                button.addEventListener('touchend', endHandler, { passive: false });
+            });
+        }
+        
+        // --- Platform Recycling/Generation Loop ---
+        function managePlatforms() {
+            if (player.position.y > nextPlatformY - platformCount * verticalSpacing * 0.5) {
+                addNextPlatform();
+            }
+
+            if (platforms.length > platformCount && platforms[0].position.y < player.position.y - 30) {
+                const platformToRemove = platforms.shift();
+                scene.remove(platformToRemove);
+                platformToRemove.traverse(child => {
+                    if (child.isMesh) {
+                        child.geometry.dispose();
+                        child.material.dispose();
+                    }
+                });
+            }
+        }
+
+        // --- Game Logic Update ---
+        function updatePlayer() {
+            // 1. Check for fatal fall condition and respawn
+            if (player.position.y < platforms[0].position.y + respawnHeight) {
+                respawn();
+                return;
+            }
+
+            // 2. Hazard Collision Check (Spikes)
+            if (checkSpikeCollision()) {
+                return;
+            }
+
+            // --- Horizontal Movement (Instant Start/Stop) ---
+            let inputX = 0;
+            let inputZ = 0;
+
+            if (keys['w'] || keys['arrowup']) { inputZ = -1; } 
+            else if (keys['s'] || keys['arrowdown']) { inputZ = 1; }
+            if (keys['a'] || keys['arrowleft']) { inputX = -1; } 
+            else if (keys['d'] || keys['arrowright']) { inputX = 1; }
+            
+            const forwardX = Math.sin(cameraYaw);
+            const forwardZ = Math.cos(cameraYaw);
+            const rightX = Math.sin(cameraYaw + Math.PI / 2);
+            const rightZ = Math.cos(cameraYaw + Math.PI / 2);
+
+            let moveVector = new THREE.Vector3(0, 0, 0);
+            
+            if (inputZ !== 0) {
+                moveVector.x += forwardX * inputZ;
+                moveVector.z += forwardZ * inputZ;
+            }
+            if (inputX !== 0) {
+                moveVector.x += rightX * inputX;
+                moveVector.z += rightZ * inputX;
+            }
+
+            if (moveVector.lengthSq() > 0) {
+                moveVector.normalize();
+                velocity.x = moveVector.x * moveSpeed; 
+                velocity.z = moveVector.z * moveSpeed;
+            } else {
+                velocity.x = 0;
+                velocity.z = 0;
+            }
+            
+            // Update horizontal position
+            player.position.x += velocity.x;
+            player.position.z += velocity.z;
+
+            // --- Vertical Movement (Jumping, Gravity, and Ground Check) ---
+            
+            // Apply gravity/jump velocity
+            jumpVelocity += gravity;
+            player.position.y += jumpVelocity;
+            
+            // Check if player has landed on a new platform
+            const platformHit = checkPlatformCollision();
+            
+            if (platformHit) {
+                const groundY = platformHit.position.y + platformHeight / 2 + playerRadius;
+                
+                if (jumpVelocity < 0 || player.position.y < groundY) { 
+                    player.position.y = groundY; // Snap to ground level
+                    isJumping = false;
+                    jumpVelocity = 0;
+                    onGroundPlatform = platformHit; 
+                    player.material.emissive.setHex(0x000000); 
+                }
+            } else {
+                isJumping = true;
+                onGroundPlatform = null;
+            }
+
+            // 4. Update Scoreboard
+            document.getElementById('score-board').textContent = `Height: ${Math.max(0, Math.floor(player.position.y / verticalSpacing) * verticalSpacing)}`;
+
+            // --- 5. First-Person Camera Position and Rotation ---
+            cameraContainer.position.copy(player.position); 
+            cameraContainer.rotation.y = cameraYaw;
+            camera.rotation.x = cameraPitch; 
+        }
+
+        // --- Animation Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            updatePlayer();
+            managePlatforms();
+            
+            // Sphere "Rolling" visualization (still calculated, but not seen)
+            const rollFactor = 0.05; 
+            player.rotation.x -= velocity.z * rollFactor;
+            player.rotation.z += velocity.x * rollFactor;
+
+            renderer.render(scene, camera);
+        }
+
+        // Handle Window Resize
+        function onWindowResize() {
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+
+            camera.aspect = width / height;
+            camera.updateProjectionMatrix();
+            renderer.setSize(width, height);
+        }
+
+        // Start initialization after the window loads
+        window.onload = function () {
+            init();
+        }
+
+    </script>
+</body>
+</html>
