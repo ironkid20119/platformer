@@ -24,13 +24,12 @@
             -moz-user-select: none;
         }
         #game-container {
+            /* Updated to use 100% of viewport width and height for full screen fit */
             width: 100vw;
-            height: 80vh; 
-            max-width: 1000px;
-            max-height: 800px;
+            height: 100vh; 
             background-color: #2c0739;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-            border-radius: 12px;
+            border-radius: 0; /* Removing border radius for true full-screen experience */
             overflow: hidden;
             position: relative;
             cursor: grab; 
@@ -48,20 +47,21 @@
             padding: 10px;
             background-color: rgba(0, 0, 0, 0.4);
             border-radius: 8px;
-            display: none; 
+            display: none; /* Hidden by default on large screens */
             grid-template-areas: ". w ." "a s d";
             grid-template-columns: repeat(3, 1fr);
             gap: 5px;
         }
         @media (max-width: 768px) {
             .controls-panel {
-                display: grid;
+                display: grid; /* Show on mobile/small screens */
             }
         }
         .control-button {
+            /* Better sizing for touch targets */
             @apply p-4 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-lg shadow-lg transition-all duration-150 active:scale-95 text-xl;
-            width: 60px;
-            height: 60px;
+            width: 70px;
+            height: 70px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -73,8 +73,8 @@
         .control-button[data-key=" "] { 
             grid-column: 1 / span 3;
             width: 100%;
-            height: 40px;
-            font-size: 1rem;
+            height: 50px;
+            font-size: 1.2rem;
             margin-top: 5px;
         }
 
@@ -83,14 +83,17 @@
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            background: rgba(0, 0, 0, 0.8);
+            background: rgba(139, 0, 0, 0.9); /* Hell-themed message box */
             color: white;
             padding: 20px 30px;
             border-radius: 10px;
             z-index: 20;
             text-align: center;
-            font-size: 1.25rem;
+            font-size: 1.5rem;
+            font-weight: bold;
             display: none;
+            border: 3px solid #ff4500;
+            text-shadow: 1px 1px 3px black;
         }
         .score-board {
             position: absolute;
@@ -271,31 +274,31 @@
             // Spikes (Hazard) Generation
             // Check if this is NOT the starting platform and generate hazards randomly
             if (!isStartPlatform && Math.random() < 0.2) { 
-                // ConeGeometry(radius, height, radialSegments)
-                const spikeGeometry = new THREE.ConeGeometry(0.2, 0.5, 8);
+                // Increased spike size for better visibility and clearance from platform
+                const spikeHeight = 1.0; 
+                const spikeRadius = 0.3;
+                const spikeGeometry = new THREE.ConeGeometry(spikeRadius, spikeHeight, 8);
                 const spikeMaterial = new THREE.MeshPhongMaterial({ color: 0xff0000, emissive: 0x880000 });
+                
+                // Calculate the local Y position so the base of the cone (Y=-0.5) sits on the platform surface (Y=0.25)
+                const spikeLocalY = platformHeight / 2 + spikeHeight / 2; // 0.25 + 0.5 = 0.75
                 
                 const spikeCount = Math.floor(Math.random() * 2) + 1; 
                 
-                // Position Y is set to platformHeight / 2 (0.25). 
-                // Since ConeGeometry is centered (base at -0.25, tip at 0.25), 
-                // setting the spike's center Y to 0.25 puts the cone base at Y=0 (platform surface) 
-                // and the tip at Y=0.5 (above platform surface).
                 const spikePositions = [
-                    new THREE.Vector3(-platformWidth * 0.15, platformHeight / 2, -platformDepth * 0.15),
-                    new THREE.Vector3(platformWidth * 0.15, platformHeight / 2, platformDepth * 0.15),
-                    new THREE.Vector3(0, platformHeight / 2, 0)
+                    new THREE.Vector3(-platformWidth * 0.15, spikeLocalY, -platformDepth * 0.15),
+                    new THREE.Vector3(platformWidth * 0.15, spikeLocalY, platformDepth * 0.15),
+                    new THREE.Vector3(0, spikeLocalY, 0)
                 ];
                 
                 for (let i = 0; i < spikeCount; i++) {
                     const spike = new THREE.Mesh(spikeGeometry, spikeMaterial);
                     spike.position.copy(spikePositions[i]);
-                    // FIX: Removed spike.rotation.x = Math.PI; which was flipping the cone and sinking it into the platform.
                     spike.castShadow = true;
                     platformGroup.add(spike);
                     platformGroup.isHazard = true;
                 }
-                platformMesh.material.color.setHex(0x6b4500); 
+                platformMesh.material.color.setHex(0x6b4500); // Darker color for hazard platforms
             }
             
             platformGroup.userData = { isPlatform: true, spikes: platformGroup.isHazard ? platformGroup.children.slice(1) : [] };
@@ -341,17 +344,19 @@
          * Checks if the player's sphere is colliding with the tip of any spike.
          */
         function checkSpikeCollision() {
+            // Note: Spike height is 1.0, so the tip is 0.5 units above the cone's center.
+            const spikeHalfHeight = 0.5; 
+            
             for (const platform of platforms) {
-                // Skip if the platform has no spikes
                 if (!platform.userData.isPlatform || !platform.userData.spikes.length) continue;
 
                 for (const spike of platform.userData.spikes) {
-                    // 1. Get world position of the cone's center (base Y + half height)
+                    // 1. Get world position of the cone's center 
                     spike.getWorldPosition(tempSpikePos); 
                     
-                    // 2. Calculate the world position of the actual spike tip (Spike Tip Point - SDP)
-                    // Cone height is 0.5. Since the cone is centered and not rotated, the tip is 0.25 above its center point (tempSpikePos.y).
-                    spikeTipPoint.set(tempSpikePos.x, tempSpikePos.y + 0.25, tempSpikePos.z);
+                    // 2. Calculate the world position of the actual spike tip 
+                    // The tip is spikeHalfHeight (0.5) above the center point.
+                    spikeTipPoint.set(tempSpikePos.x, tempSpikePos.y + spikeHalfHeight, tempSpikePos.z);
 
                     // 3. Get player center position
                     player.getWorldPosition(tempPlayerPos);
@@ -359,7 +364,7 @@
                     // 4. Calculate distance between player center and spike tip
                     const distance = tempPlayerPos.distanceTo(spikeTipPoint);
 
-                    // 5. Sphere-to-Sphere Intersection Check (Spike Tip Radius + Player Radius)
+                    // 5. Sphere-to-Sphere Intersection Check 
                     if (distance < playerRadius + spikeTipRadius) {
                         respawn();
                         return true;
@@ -559,6 +564,7 @@
                     keys[key] = false;
                 };
 
+                // Use non-passive listeners for preventing default actions on touch/preventing scroll
                 button.addEventListener('touchstart', startHandler, { passive: false });
                 button.addEventListener('touchend', endHandler, { passive: false });
             });
